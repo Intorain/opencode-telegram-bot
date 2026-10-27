@@ -162,7 +162,10 @@ describe("e2e fault proxy", () => {
   });
 
   afterEach(async () => {
+    // The proxy writes to stateDir until it exits, so removing it earlier races with those writes.
+    const proxyExited = new Promise((resolveExit) => proxy.child.once("exit", resolveExit));
     proxy.child.kill();
+    await proxyExited;
     await upstream.close();
     rmSync(stateDir, { recursive: true, force: true });
   });
