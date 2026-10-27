@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompactProgressStreamer } from "../../../src/bot/streaming/compact-progress-streamer.js";
 
+const READ = { commands: 0, edits: 0, reads: 1, tools: 0 };
+const COMMAND = { commands: 1, edits: 0, reads: 0, tools: 0 };
+const TOOL = { commands: 0, edits: 0, reads: 0, tools: 1 };
+
 describe("bot/streaming/compact-progress-streamer", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -12,17 +16,14 @@ describe("bot/streaming/compact-progress-streamer", () => {
     const streamer = new CompactProgressStreamer({ throttleMs: 0, sendText, editText });
 
     streamer.updateActivity("s1", "working");
+    streamer.addToolCall("s1", "call-1", READ);
     await new Promise((resolve) => setTimeout(resolve, 0));
     await streamer.finalize("s1");
 
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(sendText).toHaveBeenCalledWith("s1", "⏳ Working\nworking");
     expect(editText).toHaveBeenCalledTimes(1);
-    expect(editText).toHaveBeenCalledWith(
-      "s1",
-      10,
-      "✅ Finished Work\ntool calls: 0 · changed files: 0",
-    );
+    expect(editText).toHaveBeenCalledWith("s1", 10, "✅ reads: 1");
   });
 
   it("deletes the progress message on finalize when deleteOnFinish is set", async () => {
@@ -59,22 +60,20 @@ describe("bot/streaming/compact-progress-streamer", () => {
     });
 
     streamer.updateActivity("s1", "working");
+    streamer.addToolCall("s1", "call-1", COMMAND);
     await new Promise((resolve) => setTimeout(resolve, 0));
     await streamer.finalize("s1", false);
 
     expect(deleteText).not.toHaveBeenCalled();
     expect(editText).toHaveBeenCalledTimes(1);
-    expect(editText).toHaveBeenCalledWith(
-      "s1",
-      10,
-      "✅ Finished Work\ntool calls: 0 · changed files: 0",
-    );
+    expect(editText).toHaveBeenCalledWith("s1", 10, "✅ commands: 1");
   });
 
-  it("creates a message for thinking-only activity", async () => {
+  it("removes a thinking-only card, which has nothing to count", async () => {
     const sendText = vi.fn().mockResolvedValue(10);
     const editText = vi.fn().mockResolvedValue(undefined);
-    const streamer = new CompactProgressStreamer({ throttleMs: 0, sendText, editText });
+    const deleteText = vi.fn().mockResolvedValue(undefined);
+    const streamer = new CompactProgressStreamer({ throttleMs: 0, sendText, editText, deleteText });
 
     streamer.updateThinking("s1");
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -82,18 +81,15 @@ describe("bot/streaming/compact-progress-streamer", () => {
 
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(sendText).toHaveBeenCalledWith("s1", "⏳ Working\n💭 Thinking...");
-    expect(editText).toHaveBeenCalledTimes(1);
-    expect(editText).toHaveBeenCalledWith(
-      "s1",
-      10,
-      "✅ Finished Work\ntool calls: 0 · changed files: 0",
-    );
+    expect(editText).not.toHaveBeenCalled();
+    expect(deleteText).toHaveBeenCalledWith("s1", 10);
   });
 
-  it("creates a message for writing-only activity", async () => {
+  it("removes a writing-only card, which has nothing to count", async () => {
     const sendText = vi.fn().mockResolvedValue(10);
     const editText = vi.fn().mockResolvedValue(undefined);
-    const streamer = new CompactProgressStreamer({ throttleMs: 0, sendText, editText });
+    const deleteText = vi.fn().mockResolvedValue(undefined);
+    const streamer = new CompactProgressStreamer({ throttleMs: 0, sendText, editText, deleteText });
 
     streamer.updateResponding("s1");
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -101,12 +97,36 @@ describe("bot/streaming/compact-progress-streamer", () => {
 
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(sendText).toHaveBeenCalledWith("s1", "⏳ Working\n✍️ Writing answer...");
-    expect(editText).toHaveBeenCalledTimes(1);
-    expect(editText).toHaveBeenCalledWith(
-      "s1",
-      10,
-      "✅ Finished Work\ntool calls: 0 · changed files: 0",
-    );
+    expect(editText).not.toHaveBeenCalled();
+    expect(deleteText).toHaveBeenCalledWith("s1", 10);
+  });
+
+  it("sends nothing for a zero-count card that was never sent", async () => {
+    const sendText = vi.fn().mockResolvedValue(10);
+    const editText = vi.fn().mockResolvedValue(undefined);
+    const deleteText = vi.fn().mockResolvedValue(undefined);
+    const streamer = new CompactProgressStreamer({ throttleMs: 5000, sendText, editText, deleteText });
+
+    streamer.updateThinking("s1");
+    await streamer.finalize("s1");
+
+    expect(sendText).not.toHaveBeenCalled();
+    expect(editText).not.toHaveBeenCalled();
+    expect(deleteText).not.toHaveBeenCalled();
+  });
+
+  it("leaves a zero-count card as it is when its removal fails", async () => {
+    const sendText = vi.fn().mockResolvedValue(10);
+    const editText = vi.fn().mockResolvedValue(undefined);
+    const deleteText = vi.fn().mockRejectedValue(new Error("message can't be deleted"));
+    const streamer = new CompactProgressStreamer({ throttleMs: 0, sendText, editText, deleteText });
+
+    streamer.updateThinking("s1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await streamer.finalize("s1");
+
+    expect(deleteText).toHaveBeenCalledWith("s1", 10);
+    expect(editText).not.toHaveBeenCalled();
   });
 
   it("updates active progress when thinking starts", async () => {
@@ -116,7 +136,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
 
     streamer.updateActivity("s1", "reading");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    streamer.addToolCall("s1", "call-1");
+    streamer.addToolCall("s1", "call-1", READ);
 
     streamer.updateThinking("s1");
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -125,12 +145,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(sendText).toHaveBeenCalledWith("s1", "⏳ Working\nreading");
     expect(editText).toHaveBeenNthCalledWith(1, "s1", 10, "⏳ Working\n💭 Thinking...");
-    expect(editText).toHaveBeenNthCalledWith(
-      2,
-      "s1",
-      10,
-      "✅ Finished Work\ntool calls: 1 · changed files: 0",
-    );
+    expect(editText).toHaveBeenNthCalledWith(2, "s1", 10, "✅ reads: 1");
   });
 
   it("keeps thinking, a tool, and writing on one message", async () => {
@@ -141,6 +156,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
     streamer.updateThinking("s1");
     await new Promise((resolve) => setTimeout(resolve, 0));
     streamer.updateActivity("s1", "reading");
+    streamer.addToolCall("s1", "call-1", TOOL);
     await new Promise((resolve) => setTimeout(resolve, 0));
     streamer.updateResponding("s1");
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -150,23 +166,18 @@ describe("bot/streaming/compact-progress-streamer", () => {
     expect(sendText).toHaveBeenCalledWith("s1", "⏳ Working\n💭 Thinking...");
     expect(editText).toHaveBeenNthCalledWith(1, "s1", 10, "⏳ Working\nreading");
     expect(editText).toHaveBeenNthCalledWith(2, "s1", 10, "⏳ Working\n✍️ Writing answer...");
-    expect(editText).toHaveBeenNthCalledWith(
-      3,
-      "s1",
-      10,
-      "✅ Finished Work\ntool calls: 0 · changed files: 0",
-    );
+    expect(editText).toHaveBeenNthCalledWith(3, "s1", 10, "✅ tools: 1");
   });
 
-  it("counts unique tool calls and changed files", async () => {
+  it("counts unique tool calls by category and changed files", async () => {
     const sendText = vi.fn().mockResolvedValue(20);
     const editText = vi.fn().mockResolvedValue(undefined);
     const streamer = new CompactProgressStreamer({ throttleMs: 100, sendText, editText });
 
     streamer.updateActivity("s1", "working");
-    streamer.addToolCall("s1", "call-1");
-    streamer.addToolCall("s1", "call-1");
-    streamer.addToolCall("s1", "call-2");
+    streamer.addToolCall("s1", "call-1", READ);
+    streamer.addToolCall("s1", "call-1", READ);
+    streamer.addToolCall("s1", "call-2", COMMAND);
     streamer.addFileChange("s1", "src/a.ts");
     streamer.addFileChange("s1", "src/a.ts");
     streamer.addFileChange("s1", "src/b.ts");
@@ -174,10 +185,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
     await streamer.finalize("s1");
 
     expect(sendText).toHaveBeenCalledTimes(1);
-    expect(sendText).toHaveBeenCalledWith(
-      "s1",
-      "✅ Finished Work\ntool calls: 2 · changed files: 2",
-    );
+    expect(sendText).toHaveBeenCalledWith("s1", "✅ commands: 1, reads: 1, changed files: 2");
     expect(editText).not.toHaveBeenCalled();
   });
 
@@ -192,9 +200,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
     await finalizePromise;
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(sendText.mock.calls.some((call) => String(call[1]).includes("run-a") || String(call[1]).includes("Finished Work"))).toBe(
-      true,
-    );
+    expect(sendText.mock.calls.some((call) => String(call[1]).includes("run-a"))).toBe(true);
     expect(sendText.mock.calls.some((call) => String(call[1]).includes("💭 Thinking..."))).toBe(true);
   });
 
@@ -206,8 +212,10 @@ describe("bot/streaming/compact-progress-streamer", () => {
     const streamer = new CompactProgressStreamer({ throttleMs: 0, sendText, editText });
 
     streamer.updateActivity("s1", "run-a");
+    streamer.addToolCall("s1", "call-a", READ);
     const firstFinalize = streamer.finalize("s1");
     streamer.updateThinking("s1");
+    streamer.addToolCall("s1", "call-b", READ);
     const secondFinalize = streamer.finalize("s1");
     await Promise.all([firstFinalize, secondFinalize]);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -215,7 +223,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
     expect(sendText.mock.calls.some((call) => String(call[1]).includes("run-a"))).toBe(true);
     expect(sendText.mock.calls.some((call) => String(call[1]).includes("💭 Thinking..."))).toBe(true);
     expect(editText).toHaveBeenCalledTimes(2);
-    expect(editText.mock.calls.every((call) => String(call[2]).includes("✅ Finished Work"))).toBe(true);
+    expect(editText.mock.calls.every((call) => call[2] === "✅ reads: 1")).toBe(true);
   });
 
   it("does not finish a detached card after the session is cleared", async () => {
@@ -343,6 +351,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
     const streamer = new CompactProgressStreamer({ throttleMs: 5000, sendText, editText });
 
     streamer.updateActivity("s1", "working");
+    streamer.addToolCall("s1", "call-1", READ);
     expect(sendText).not.toHaveBeenCalled();
 
     await streamer.flushPending("s1");
@@ -350,11 +359,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
 
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(sendText).toHaveBeenCalledWith("s1", "⏳ Working\nworking");
-    expect(editText).toHaveBeenCalledWith(
-      "s1",
-      40,
-      "✅ Finished Work\ntool calls: 0 · changed files: 0",
-    );
+    expect(editText).toHaveBeenCalledWith("s1", 40, "✅ reads: 1");
   });
 
   it("holds activity that arrives before close and puts it on the next card", async () => {
@@ -363,31 +368,23 @@ describe("bot/streaming/compact-progress-streamer", () => {
     const streamer = new CompactProgressStreamer({ throttleMs: 0, sendText, editText });
 
     streamer.updateActivity("s1", "first");
-    streamer.addToolCall("s1", "call-1");
+    streamer.addToolCall("s1", "call-1", READ);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     streamer.holdForClose("s1");
     streamer.updateActivity("s1", "second");
-    streamer.addToolCall("s1", "call-2");
+    streamer.addToolCall("s1", "call-2", COMMAND);
     await streamer.finalize("s1");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(editText).toHaveBeenCalledWith(
-      "s1",
-      50,
-      "✅ Finished Work\ntool calls: 1 · changed files: 0",
-    );
+    expect(editText).toHaveBeenCalledWith("s1", 50, "✅ reads: 1");
     expect(sendText).toHaveBeenCalledWith("s1", "⏳ Working\nsecond");
     expect(editText.mock.calls.some((call) => String(call[2]).includes("second"))).toBe(false);
 
     await streamer.finalize("s1");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(editText).toHaveBeenCalledWith(
-      "s1",
-      51,
-      "✅ Finished Work\ntool calls: 1 · changed files: 0",
-    );
+    expect(editText).toHaveBeenCalledWith("s1", 51, "✅ commands: 1");
   });
 
   it("drops held activity when the session is cleared", async () => {
@@ -456,16 +453,8 @@ describe("bot/streaming/compact-progress-streamer", () => {
     await streamer.finalize("s1");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(editText).toHaveBeenCalledWith(
-      "s1",
-      80,
-      "✅ Finished Work\ntool calls: 0 · changed files: 1",
-    );
-    expect(editText).toHaveBeenCalledWith(
-      "s1",
-      81,
-      "✅ Finished Work\ntool calls: 0 · changed files: 0",
-    );
+    expect(editText).toHaveBeenCalledWith("s1", 80, "✅ changed files: 1");
+    expect(editText.mock.calls.some((call) => call[1] === 81)).toBe(false);
   });
 
   it("puts held activity back on the open card when the close is abandoned", async () => {
@@ -517,11 +506,11 @@ describe("bot/streaming/compact-progress-streamer", () => {
 
       expect(onPark).toHaveBeenCalledWith("s1", ["call-bg"]);
       expect(editText).toHaveBeenLastCalledWith("s1", 10, "⏳ Working\nbash sleep 90 · 🕒 30s");
-      expect(editText.mock.calls.some((call) => call[2].includes("Finished"))).toBe(false);
+      expect(editText.mock.calls.some((call) => !call[2].startsWith("⏳ Working"))).toBe(false);
     });
 
     it("opens a new card for the next stretch while the parked one stays", async () => {
-      const { streamer, sendText, editText } = createStreamer();
+      const { streamer, sendText, editText, deleteText } = createStreamer();
 
       streamer.addBackgroundOperation("s1", "call-bg", "bash sleep 90");
       streamer.updateActivity("s1", "bash sleep 90");
@@ -532,12 +521,9 @@ describe("bot/streaming/compact-progress-streamer", () => {
       await streamer.finalize("s1");
 
       expect(sendText).toHaveBeenCalledTimes(2);
-      expect(editText).toHaveBeenCalledWith(
-        "s1",
-        11,
-        "✅ Finished Work\ntool calls: 0 · changed files: 0",
-      );
-      expect(editText.mock.calls.some((call) => call[1] === 10 && call[2].includes("Finished"))).toBe(
+      expect(deleteText).toHaveBeenCalledWith("s1", 11);
+      expect(deleteText).not.toHaveBeenCalledWith("s1", 10);
+      expect(editText.mock.calls.some((call) => call[1] === 10 && !call[2].startsWith("⏳"))).toBe(
         false,
       );
     });
@@ -546,17 +532,13 @@ describe("bot/streaming/compact-progress-streamer", () => {
       const { streamer, editText } = createStreamer();
 
       streamer.updateActivity("s1", "bash sleep 90");
-      streamer.addToolCall("s1", "call-read");
+      streamer.addToolCall("s1", "call-read", READ);
       streamer.addBackgroundOperation("s1", "call-bg", "bash sleep 90");
       await tick();
       await streamer.finalize("s1");
-      await streamer.endBackgroundOperation("s1", "call-bg");
+      await streamer.endBackgroundOperation("s1", "call-bg", COMMAND);
 
-      expect(editText).toHaveBeenLastCalledWith(
-        "s1",
-        10,
-        "✅ Finished Work\ntool calls: 2 · changed files: 0",
-      );
+      expect(editText).toHaveBeenLastCalledWith("s1", 10, "✅ commands: 1, reads: 1");
     });
 
     it("deletes the parked card when the operation ends with delete on finish", async () => {
@@ -568,7 +550,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
       await streamer.finalize("s1", true);
       expect(deleteText).not.toHaveBeenCalled();
 
-      await streamer.endBackgroundOperation("s1", "call-bg", true);
+      await streamer.endBackgroundOperation("s1", "call-bg", COMMAND, true);
       expect(deleteText).toHaveBeenCalledWith("s1", 10);
     });
 
@@ -580,7 +562,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
       streamer.addBackgroundOperation("s1", "call-2", "second");
       await tick();
       await streamer.finalize("s1");
-      await streamer.endBackgroundOperation("s1", "call-2");
+      await streamer.endBackgroundOperation("s1", "call-2", COMMAND);
       await tick();
 
       expect(editText).toHaveBeenLastCalledWith("s1", 10, "⏳ Working\nfirst");
@@ -597,7 +579,7 @@ describe("bot/streaming/compact-progress-streamer", () => {
       const editsBefore = editText.mock.calls.length;
       streamer.dropBackgroundOperations("s1");
       streamer.updateBackgroundOperation("s1", "call-bg", "bash sleep 90 · 🕒 1m");
-      await streamer.endBackgroundOperation("s1", "call-bg");
+      await streamer.endBackgroundOperation("s1", "call-bg", COMMAND);
 
       expect(editText).toHaveBeenCalledTimes(editsBefore);
     });
@@ -611,13 +593,9 @@ describe("bot/streaming/compact-progress-streamer", () => {
       await streamer.finalize("s1");
       streamer.updateActivity("s1", "next");
       streamer.discardOpenCard("s1", "session_error");
-      await streamer.endBackgroundOperation("s1", "call-bg");
+      await streamer.endBackgroundOperation("s1", "call-bg", COMMAND);
 
-      expect(editText).toHaveBeenLastCalledWith(
-        "s1",
-        10,
-        "✅ Finished Work\ntool calls: 1 · changed files: 0",
-      );
+      expect(editText).toHaveBeenLastCalledWith("s1", 10, "✅ commands: 1");
     });
   });
 });

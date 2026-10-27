@@ -11,6 +11,7 @@ import {
   formatToolInfo,
 } from "../../../app/formatters/summary-formatter.js";
 import { renderSubagentCard } from "../../../app/formatters/subagent-formatter.js";
+import { countToolCall } from "../../../app/formatters/compact-summary-formatter.js";
 import {
   RUNNING_ICON,
   appendDuration,
@@ -369,7 +370,12 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
     if (background && isTerminal) {
       // Counted on the card it started in, which closes with it once parked.
       void runtime.compactProgressStreamer
-        .endBackgroundOperation(sessionId, callId, getDeleteCompactProgressOnFinish())
+        .endBackgroundOperation(
+          sessionId,
+          callId,
+          countToolCall(toolInfo),
+          getDeleteCompactProgressOnFinish(),
+        )
         .catch((error) => {
           logger.error("[Bot] Failed to close the progress card of a background operation", error);
         });
@@ -396,8 +402,11 @@ export function registerToolActivityHandlers(deps: ToolActivityDeps): void {
       }
     }
 
-    if (status === "completed" && !background) {
-      runtime.compactProgressStreamer.addToolCall(sessionId, callId);
+    // A failed call counts as finished work only if it was seen running: one that
+    // failed while composing, or after the bot already ended it, was never shown.
+    const seenFailing = status === "error" && !!storedInfo && !failedWhileComposing;
+    if ((status === "completed" || seenFailing) && !background) {
+      runtime.compactProgressStreamer.addToolCall(sessionId, callId, countToolCall(toolInfo));
     }
   });
 

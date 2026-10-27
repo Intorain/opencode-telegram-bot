@@ -38,9 +38,10 @@
  * Two findings that invalidate the naive approach:
  *  - Telegram Web renders emoji as <img class="emoji" alt="✅">, so `innerText`
  *    drops every status marker. All probes rebuild text from the alt attribute.
- *  - The "⏳ Working" / "✅ Finished Work" markers only exist when compact
- *    output mode is ON. With it off (the default) a run ends with the footer
- *    "{agent} · 🧠 {model} · 🕒 {duration}", so probeState treats both as done.
+ *  - The "⏳ Working" marker only exists when compact output mode is ON; its
+ *    finished card is a "✅ " count line, or is removed when nothing was counted.
+ *    In both modes a run ends with the footer "{agent} · 🧠 {model} · 🕒 {duration}",
+ *    which is what probeState treats as done.
  */
 
 // ---------------------------------------------------------------------------
@@ -118,12 +119,12 @@ const probeState = () => {
   const last = texts[texts.length - 1] || "";
 
   const has = (needle) => joined.includes(needle);
-  // Compact mode ends with "✅ Finished Work"; normal mode ends with the run
-  // footer "{agent} · 🧠 {model} · 🕒 {duration}" (settings > Assistant footer).
+  // A run ends with the footer "{agent} · 🧠 {model} · 🕒 {duration}"
+  // (settings > Assistant footer), in compact and normal mode alike.
   const footerDone = /·\s*🕒\s*\S+/.test(last);
 
   let status = "idle";
-  if (has("✅ Finished Work") || footerDone) status = "finished";
+  if (footerDone) status = "finished";
   else if (has("🔐 Waiting for permission")) status = "waiting_permission";
   else if (has("❓ Waiting for your answer")) status = "waiting_question";
   else if (has("🔁 Retrying")) status = "retrying";
@@ -131,12 +132,8 @@ const probeState = () => {
   if (last.includes("Agent is already running a task")) status = "busy_guard";
   else if (status === "idle" && last.trim().startsWith("⚠️")) status = "blocked_guard";
 
-  const doneMatch = joined.match(/tool calls:\s*(\d+)\s*·\s*changed files:\s*(\d+)/);
-
   return {
     status,
-    toolCalls: doneMatch ? Number(doneMatch[1]) : null,
-    changedFiles: doneMatch ? Number(doneMatch[2]) : null,
     lastText: last.slice(0, 300),
     buttons: [...(bubbles[bubbles.length - 1]?.querySelectorAll(".reply-markup-button") || [])].map(
       (b) => readText(b),

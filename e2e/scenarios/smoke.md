@@ -28,8 +28,8 @@ Cost is deliberately minimal: one short prompt, no tool calls.
 
 - `/new` is confirmed and the pinned dashboard shows the new session with an
   empty or near-empty context.
-- The run reaches `finished` — either the `✅ Finished Work` marker or the
-  `{agent} · 🧠 {model} · 🕒 {duration}` footer, depending on compact mode.
+- The run reaches `finished` — the `{agent} · 🧠 {model} · 🕒 {duration}`
+  footer, in compact and normal mode alike.
 - The assistant produced a non-empty text reply.
 - The pinned dashboard still shows the expected project and model.
 - The log delta contains no `[ERROR]`.

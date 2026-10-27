@@ -1,3 +1,8 @@
+import {
+  emptyToolCallCounts,
+  formatCompactSummary,
+  type ToolCallCounts,
+} from "../../app/formatters/compact-summary-formatter.js";
 import { t } from "../../i18n/index.js";
 import { logger } from "../../utils/logger.js";
 import {
@@ -9,7 +14,8 @@ interface CompactProgressState {
   sessionId: string;
   messageId: number | null;
   latestText: string;
-  toolCallIds: Set<string>;
+  // Counted calls by id, so a call reported finished twice counts once.
+  toolCalls: Map<string, ToolCallCounts>;
   filePaths: Set<string>;
   // Background operations started on this card, in start order, with their current text.
   backgroundActivities: Map<string, string>;
@@ -21,7 +27,7 @@ interface CompactProgressState {
 
 interface HeldStretch {
   activity: string | null;
-  toolCallIds: string[];
+  toolCalls: Map<string, ToolCallCounts>;
 }
 
 export interface CompactProgressStreamerOptions {
@@ -42,7 +48,7 @@ function createInitialState(sessionId: string): CompactProgressState {
     sessionId,
     messageId: null,
     latestText: "",
-    toolCallIds: new Set(),
+    toolCalls: new Map(),
     filePaths: new Set(),
     backgroundActivities: new Map(),
     timer: null,
@@ -102,7 +108,7 @@ export class CompactProgressStreamer {
       return;
     }
 
-    this.heldBySession.set(sessionId, { activity: null, toolCallIds: [] });
+    this.heldBySession.set(sessionId, { activity: null, toolCalls: new Map() });
   }
 
   isHolding(sessionId: string): boolean {
@@ -143,20 +149,18 @@ export class CompactProgressStreamer {
     this.updateActivity(sessionId, t("progress.compact.responding"));
   }
 
-  addToolCall(sessionId: string, callId: string): void {
+  addToolCall(sessionId: string, callId: string, counts: ToolCallCounts): void {
     if (!sessionId || !callId) {
       return;
     }
 
     const held = this.heldBySession.get(sessionId);
     if (held) {
-      if (!held.toolCallIds.includes(callId)) {
-        held.toolCallIds.push(callId);
-      }
+      held.toolCalls.set(callId, counts);
       return;
     }
 
-    this.states.get(sessionId)?.toolCallIds.add(callId);
+    this.states.get(sessionId)?.toolCalls.set(callId, counts);
   }
 
   addFileChange(sessionId: string, filePath: string): void {
@@ -198,6 +202,7 @@ export class CompactProgressStreamer {
   async endBackgroundOperation(
     sessionId: string,
     callId: string,
+    counts: ToolCallCounts,
     deleteOnFinish = false,
   ): Promise<void> {
     const state = this.findBackgroundCard(sessionId, callId);
@@ -206,7 +211,7 @@ export class CompactProgressStreamer {
     }
 
     state.backgroundActivities.delete(callId);
-    state.toolCallIds.add(callId);
+    state.toolCalls.set(callId, counts);
     if (!this.parked.has(state)) {
       return;
     }
@@ -277,22 +282,35 @@ export class CompactProgressStreamer {
         return;
       }
 
-      if (deleteOnFinish && this.deleteText) {
+      // A card with nothing to count goes the way "Delete progress on finish" takes it.
+      const summary = this.formatSummary(state);
+      if ((deleteOnFinish || !summary) && this.deleteText) {
         await this.deleteProgressMessage(state);
         return;
       }
 
-      state.latestText = t("progress.compact.done", {
-        header: t("progress.compact.finished_header"),
-        tools: state.toolCallIds.size,
-        files: state.filePaths.size,
-      });
+      if (!summary) {
+        return;
+      }
 
+      state.latestText = summary;
       await this.syncState(state, "finalize");
     } finally {
       this.finalizing.delete(state);
       this.cancelState(state);
     }
+  }
+
+  private formatSummary(state: CompactProgressState): string {
+    const totals = emptyToolCallCounts();
+    for (const counts of state.toolCalls.values()) {
+      totals.commands += counts.commands;
+      totals.edits += counts.edits;
+      totals.reads += counts.reads;
+      totals.tools += counts.tools;
+    }
+
+    return formatCompactSummary(totals, state.filePaths.size);
   }
 
   private async deleteProgressMessage(state: CompactProgressState): Promise<void> {
@@ -403,8 +421,8 @@ export class CompactProgressStreamer {
       this.updateActivity(sessionId, held.activity);
     }
 
-    for (const callId of held.toolCallIds) {
-      this.addToolCall(sessionId, callId);
+    for (const [callId, counts] of held.toolCalls) {
+      this.addToolCall(sessionId, callId, counts);
     }
   }
 
