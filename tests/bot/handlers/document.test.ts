@@ -440,6 +440,87 @@ describe("bot/handlers/document", () => {
       expect(downloadMock).not.toHaveBeenCalled();
       expect(processPromptMock).toHaveBeenCalledWith(ctx, "Describe this image", deps);
     });
+
+    it.each([
+      ["photo.jpg", "image/jpeg"],
+      ["photo.JPEG", "image/jpeg"],
+      ["photo.png", "image/png"],
+      ["photo.webp", "image/webp"],
+      ["photo.gif", "image/gif"],
+    ])(
+      "sends octet-stream %s as an image with MIME type %s",
+      async (fileName, expectedMimeType) => {
+        const { ctx } = createDocumentContext({
+          document: {
+            file_id: "image-file-id",
+            file_unique_id: "image-unique-id",
+            file_name: fileName,
+            mime_type: "application/octet-stream",
+            file_size: 5000,
+          },
+        });
+        const { deps, processPromptMock } = createDocumentDeps();
+
+        await handleDocumentMessage(ctx, deps);
+
+        expect(processPromptMock).toHaveBeenCalledWith(ctx, "", deps, [
+          expect.objectContaining({
+            type: "file",
+            mime: expectedMimeType,
+            filename: fileName,
+            url: expect.stringMatching(new RegExp(`^data:${expectedMimeType};base64,`)),
+          }),
+        ]);
+      },
+    );
+
+    it("rejects octet-stream files without an image extension", async () => {
+      const { ctx, replyMock } = createDocumentContext({
+        document: {
+          file_id: "bin-file-id",
+          file_unique_id: "bin-unique-id",
+          file_name: "firmware.bin",
+          mime_type: "application/octet-stream",
+          file_size: 5000,
+        },
+      });
+      const { deps, processPromptMock, downloadMock } = createDocumentDeps();
+
+      await handleDocumentMessage(ctx, deps);
+
+      expect(replyMock).toHaveBeenCalledWith(t("bot.file_type_unsupported"));
+      expect(downloadMock).not.toHaveBeenCalled();
+      expect(processPromptMock).not.toHaveBeenCalled();
+    });
+
+    it("routes a PDF named with an image extension by its PDF MIME type", async () => {
+      const { ctx, replyMock } = createDocumentContext({
+        document: {
+          file_id: "pdf-file-id",
+          file_unique_id: "pdf-unique-id",
+          file_name: "report.png",
+          mime_type: "application/pdf",
+          file_size: 5000,
+        },
+      });
+      const { deps, processPromptMock } = createDocumentDeps({
+        getModelCapabilities: vi.fn().mockResolvedValue({
+          input: { pdf: true, image: false },
+        }),
+      });
+
+      await handleDocumentMessage(ctx, deps);
+
+      expect(replyMock).not.toHaveBeenCalledWith(t("bot.photo_model_no_image"));
+      expect(processPromptMock).toHaveBeenCalledWith(ctx, "", deps, [
+        expect.objectContaining({
+          type: "file",
+          mime: "application/pdf",
+          filename: "report.png",
+          url: expect.stringMatching(/^data:application\/pdf;base64,/),
+        }),
+      ]);
+    });
   });
 
   describe("document extraction via DOC_EXTRACTOR_URL", () => {
